@@ -32,8 +32,8 @@ An advanced Autonomous Retrieval-Augmented Generation (RAG) system that combines
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/rchhabra13/portfolio-projects.git
-   cd portfolio-projects/autonomous_rag
+   git clone https://github.com/rchhabra13/autonomous_rag.git
+   cd autonomous_rag
    ```
 
 2. **Install dependencies**
