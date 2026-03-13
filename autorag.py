@@ -1,103 +1,173 @@
-import streamlit as st
-import nest_asyncio
+"""Autonomous RAG application using Agno GPT-4o with PgVector database.
+
+This module implements an autonomous retrieval-augmented generation (RAG) system
+that combines document knowledge with real-time web search capabilities using
+OpenAI's GPT-4o model and PostgreSQL with PgVector extension for vector storage.
+"""
+
+import logging
 from io import BytesIO
+from typing import Optional
+
+import nest_asyncio
+import streamlit as st
 from agno.agent import Agent
 from agno.document.reader.pdf_reader import PDFReader
-from agno.models.openai import OpenAIChat
-from agno.knowledge.pdf_url import PDFUrlKnowledgeBase
-from agno.tools.duckduckgo import DuckDuckGoTools
 from agno.embedder.openai import OpenAIEmbedder
-from agno.vectordb.pgvector import PgVector, SearchType
+from agno.knowledge.pdf_url import PDFUrlKnowledgeBase
+from agno.models.openai import OpenAIChat
 from agno.storage.agent.postgres import PostgresAgentStorage
+from agno.tools.duckduckgo import DuckDuckGoTools
+from agno.vectordb.pgvector import PgVector
 
-# Apply nest_asyncio to allow nested event loops, required for running async functions in Streamlit
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# Apply nest_asyncio to allow nested event loops (required for Streamlit)
 nest_asyncio.apply()
 
 # Database connection string for PostgreSQL
-DB_URL = "postgresql+psycopg://ai:ai@localhost:5532/ai"
+DB_URL: str = "postgresql+psycopg://ai:ai@localhost:5532/ai"
 
-# Function to set up the Assistant, utilizing caching for resource efficiency
+
 @st.cache_resource
 def setup_assistant(api_key: str) -> Agent:
-    """Initializes and returns an AI Assistant agent with caching for efficiency.
+    """Initialize and return an AI Assistant agent with caching for efficiency.
 
-    This function sets up an AI Assistant agent using the OpenAI GPT-4o-mini model 
-    and configures it with a knowledge base, storage, and web search tools. The 
-    assistant is designed to first search its knowledge base before querying the 
+    This function sets up an AI Assistant agent using the OpenAI GPT-4o-mini model
+    and configures it with a knowledge base, storage, and web search tools. The
+    assistant is designed to first search its knowledge base before querying the
     internet, providing clear and concise answers.
 
     Args:
         api_key (str): The API key required to access the OpenAI services.
 
     Returns:
-        Agent: An initialized Assistant agent configured with a language model, 
-        knowledge base, storage, and additional tools for enhanced functionality."""
-    llm = OpenAIChat(id="gpt-4o-mini", api_key=api_key)
-    # Set up the Assistant with storage, knowledge base, and tools
-    return Agent(
-        id="auto_rag_agent",  # Name of the Assistant
-        model=llm,  # Language model to be used
-        storage=PostgresAgentStorage(table_name="auto_rag_storage", db_url=DB_URL),  
-        knowledge_base=PDFUrlKnowledgeBase(
-            vector_db=PgVector(
-                db_url=DB_URL,  
-                collection="auto_rag_docs",  
-                embedder=OpenAIEmbedder(id="text-embedding-ada-002", dimensions=1536, api_key=api_key),  
-            ),
-            num_documents=3,  
-        ),
-        tools=[DuckDuckGoTools()],  # Additional tool for web search via DuckDuckGo
-        instructions=[
-            "Search your knowledge base first.",  
-            "If not found, search the internet.",  
-            "Provide clear and concise answers.",  
-        ],
-        show_tool_calls=True,  
-        search_knowledge=True,  
-        markdown=True,  
-        debug_mode=True,  
-    )
+        Agent: An initialized Assistant agent configured with a language model,
+            knowledge base, storage, and additional tools for enhanced functionality.
 
-# Function to add a PDF document to the knowledge base
-def add_document(agent: Agent, file: BytesIO):
+    Raises:
+        ValueError: If the API key is invalid or empty.
+        ConnectionError: If the database connection fails.
+    """
+    if not api_key or not api_key.strip():
+        raise ValueError("OpenAI API key cannot be empty")
+
+    logger.info("Initializing OpenAI chat model")
+    llm = OpenAIChat(id="gpt-4o-mini", api_key=api_key)
+
+    logger.info("Setting up RAG agent with PgVector knowledge base")
+    try:
+        agent = Agent(
+            id="auto_rag_agent",
+            model=llm,
+            storage=PostgresAgentStorage(
+                table_name="auto_rag_storage",
+                db_url=DB_URL
+            ),
+            knowledge_base=PDFUrlKnowledgeBase(
+                vector_db=PgVector(
+                    db_url=DB_URL,
+                    collection="auto_rag_docs",
+                    embedder=OpenAIEmbedder(
+                        id="text-embedding-ada-002",
+                        dimensions=1536,
+                        api_key=api_key
+                    ),
+                ),
+                num_documents=3,
+            ),
+            tools=[DuckDuckGoTools()],
+            instructions=[
+                "Search your knowledge base first.",
+                "If not found, search the internet.",
+                "Provide clear and concise answers.",
+            ],
+            show_tool_calls=True,
+            search_knowledge=True,
+            markdown=True,
+            debug_mode=True,
+        )
+        logger.info("Agent initialized successfully")
+        return agent
+    except Exception as e:
+        logger.error(f"Failed to initialize agent: {str(e)}")
+        raise
+
+
+def add_document(agent: Agent, file: BytesIO) -> None:
     """Add a PDF document to the agent's knowledge base.
 
-    This function reads a PDF document from a file-like object and adds its contents to the specified agent's knowledge base. If the document is successfully read, the contents are loaded into the knowledge base with the option to upsert existing data.
+    This function reads a PDF document from a file-like object and adds its
+    contents to the specified agent's knowledge base. If the document is
+    successfully read, the contents are loaded into the knowledge base with
+    the option to upsert existing data.
 
     Args:
         agent (Agent): The agent whose knowledge base will be updated.
         file (BytesIO): A file-like object containing the PDF document to be added.
 
     Returns:
-        None: The function does not return a value but provides feedback on whether the operation was successful."""
-    reader = PDFReader()
-    docs = reader.read(file)
-    if docs:
-        agent.knowledge_base.load_documents(docs, upsert=True)
-        st.success("Document added to the knowledge base.")
-    else:
-        st.error("Failed to read the document.")
+        None
 
-# Function to query the Assistant and return a response
-def query_assistant(agent: Agent, question: str) -> str:
-    """Queries the Assistant and returns a response.
+    Raises:
+        Exception: If PDF reading or document loading fails.
+    """
+    try:
+        logger.info("Attempting to read PDF document")
+        reader = PDFReader()
+        docs = reader.read(file)
+
+        if docs:
+            logger.info(f"Successfully read PDF with {len(docs)} pages")
+            agent.knowledge_base.load_documents(docs, upsert=True)
+            st.success("Document added to the knowledge base.")
+            logger.info("Document loaded to knowledge base")
+        else:
+            logger.warning("PDF read returned empty document list")
+            st.error("Failed to read the document.")
+    except Exception as e:
+        logger.error(f"Error adding document: {str(e)}")
+        st.error(f"Error adding document: {str(e)}")
+
+
+def query_assistant(agent: Agent, question: str) -> Optional[str]:
+    """Query the Assistant and return a response.
 
     Args:
         agent (Agent): An instance of the Agent class used to process the query.
         question (str): The question to be asked to the Assistant.
 
     Returns:
-        str: The response generated by the Assistant for the given question."""
-    return "".join([delta for delta in agent.run(question)])
+        Optional[str]: The response content generated by the Assistant for the
+            given question, or None if the query fails.
 
-# Main function to handle Streamlit app layout and interactions
-def main():
+    Raises:
+        Exception: If the query execution fails.
+    """
+    try:
+        logger.info(f"Processing query: {question[:50]}...")
+        response = agent.run(question)
+        result = "".join([delta for delta in response])
+        logger.info("Query processed successfully")
+        return result
+    except Exception as e:
+        logger.error(f"Error querying assistant: {str(e)}")
+        st.error(f"Error processing query: {str(e)}")
+        return None
+
+
+def main() -> None:
     """Main function to handle the layout and interactions for the Streamlit app.
 
     This function sets up the Streamlit app configuration, handles user inputs such
     as OpenAI API key, PDF uploads, and user questions, and interacts with an
     autonomous retrieval-augmented generation (RAG) assistant based on GPT-4o.
-    
+
     The app allows users to upload PDF documents to enhance the knowledge base and
     submit questions to receive generated responses.
 
@@ -108,37 +178,44 @@ def main():
         - Displays responses generated by querying an assistant.
 
     Raises:
-        StreamlitWarning: If the OpenAI API key is not provided."""
+        ValueError: If required configuration is missing.
+    """
+    logger.info("Starting Streamlit application")
+
     st.set_page_config(page_title="AutoRAG", layout="wide")
     st.title("🤖 Auto-RAG: Autonomous RAG with GPT-4o")
 
     api_key = st.sidebar.text_input("Enter your OpenAI API Key 🔑", type="password")
-    
+
     if not api_key:
         st.sidebar.warning("Enter your OpenAI API Key to proceed.")
         st.stop()
 
-    assistant = setup_assistant(api_key)
-    
+    try:
+        assistant = setup_assistant(api_key)
+    except ValueError as e:
+        st.error(f"Configuration error: {str(e)}")
+        st.stop()
+    except ConnectionError as e:
+        st.error(f"Database connection error: {str(e)}")
+        st.stop()
+
     uploaded_file = st.sidebar.file_uploader("📄 Upload PDF", type=["pdf"])
-    
+
     if uploaded_file and st.sidebar.button("🛠️ Add to Knowledge Base"):
         add_document(assistant, BytesIO(uploaded_file.read()))
 
     question = st.text_input("💬 Ask Your Question:")
-    
-    # When the user submits a question, query the assistant for an answer
+
     if st.button("🔍 Get Answer"):
-        # Ensure the question is not empty
         if question.strip():
             with st.spinner("🤔 Thinking..."):
-                # Query the assistant and display the response
                 answer = query_assistant(assistant, question)
-                st.write("📝 **Response:**", answer.content)
+                if answer:
+                    st.write("📝 **Response:**", answer.content)
         else:
-            # Show an error if the question input is empty
             st.error("Please enter a question.")
 
-# Entry point of the application
+
 if __name__ == "__main__":
     main()
